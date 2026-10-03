@@ -1,0 +1,198 @@
+================================================================================
+🔍 FACEBOOK ACTIVITY TRACKER v3.0 - QUICK START CHECKLIST
+================================================================================
+
+BEFORE YOU START:
+✓ Download all files from the project folder
+✓ Have GitHub & Render accounts ready
+✓ Get Telegram Bot Token (@BotFather)
+✓ Have Facebook email & password
+
+================================================================================
+STEP 1: SETUP GITHUB REPOSITORY
+================================================================================
+
+1. Create new GitHub repository named: facebook-tracker-bot
+2. Clone to your computer:
+   git clone https://github.com/YOUR_USERNAME/facebook-tracker-bot.git
+   cd facebook-tracker-bot
+
+3. Place all downloaded files in this folder:
+   - app/main.py
+   - requirements.txt
+   - .env.example
+   - .gitignore
+   - Procfile
+   - README.md
+   - RENDER_SETUP_BANGLA.md
+
+4. Push to GitHub:
+   git add .
+   git commit -m "Facebook tracker bot - initial"
+   git push origin main
+
+================================================================================
+STEP 2: GET TELEGRAM BOT TOKEN
+================================================================================
+
+1. Open Telegram, search @BotFather
+2. Send: /newbot
+3. Choose bot name: "Facebook Activity Tracker"
+4. Choose username: "my_fb_tracker_bot_123" (must be unique)
+5. COPY THE TOKEN (long string with numbers and letters)
+
+================================================================================
+STEP 3: DEPLOY TO RENDER
+================================================================================
+
+1. Go to https://render.com and sign up with GitHub
+2. Click "New +" → "Web Service"
+3. Connect your facebook-tracker-bot repository
+4. Fill in:
+   - Name: facebook-tracker-bot
+   - Environment: Python 3
+   - Build Command: pip install -r requirements.txt
+   - Start Command: cd app && python main.py
+   - Instance Type: Free
+
+5. ADD THESE ENVIRONMENT VARIABLES:
+
+   TELEGRAM_BOT_TOKEN = (paste your token from BotFather)
+   FB_EMAIL = your_facebook_email@gmail.com
+   FB_PASSWORD = your_facebook_password
+   PORT = 10000
+
+6. Click "Create Web Service"
+7. Wait for build (2-3 minutes)
+8. Check logs for: "✅ Flask server on 0.0.0.0:10000"
+
+================================================================================
+STEP 4: TEST YOUR BOT
+================================================================================
+
+1. Open Telegram
+2. Find your bot (the username you created)
+3. Send: /start
+4. You should see a menu with options
+
+5. In Telegram, send a Facebook profile URL:
+   https://facebook.com/username
+   
+6. Bot will start tracking that profile
+
+================================================================================
+TELEGRAM COMMANDS REFERENCE
+================================================================================
+
+/start          - Show menu
+/add URL        - Add Facebook profile URL
+/list           - Show all tracked profiles
+/status ID      - Check live status
+/stop ID        - Stop tracking
+/history ID     - View activity history
+/help           - Show help
+
+Example: /add https://facebook.com/username
+
+================================================================================
+COMMON ISSUES & FIXES
+================================================================================
+
+❌ "ModuleNotFoundError"
+→ Make sure requirements.txt is in GitHub repo root
+
+❌ Facebook login fails
+→ Check email/password are correct
+→ Disable 2FA temporarily
+→ Approve login attempt email from Facebook
+
+❌ Telegram bot not responding
+→ Wait 30 seconds, try again
+→ Check token is correct
+→ Check Render logs for errors
+
+❌ Service not starting
+→ Check all Environment Variables are set correctly
+→ Make sure file structure is correct
+→ Check Render logs tab for error details
+
+================================================================================
+IMPORTANT FILES EXPLAINED
+================================================================================
+
+main.py                  → Main application code
+requirements.txt         → Python packages needed
+.env.example            → Template for environment variables
+.gitignore              → Files to hide from GitHub
+Procfile                → Tells Render how to start app
+README.md               → Full documentation
+RENDER_SETUP_BANGLA.md  → Bengali setup guide
+
+================================================================================
+YOUR RENDER SERVICE URL
+================================================================================
+
+After deployment completes, your service URL will be:
+https://facebook-tracker-bot.onrender.com/
+
+You can test it in browser. You should see:
+{
+  "status": "running",
+  "service": "Facebook Activity Tracker v3.0",
+  "fb_authenticated": true
+}
+
+================================================================================
+MONITORING
+================================================================================
+
+Check service health:
+→ Go to Render Dashboard
+→ Click your service name
+→ Check "Logs" tab for any errors
+→ Look for "🚀 Flask server" message
+
+Auto-deployment:
+→ Every time you git push, Render auto-rebuilds
+
+================================================================================
+API ENDPOINTS (Optional - for advanced users)
+================================================================================
+
+GET  http://service-url/
+GET  http://service-url/api/targets/{user_id}
+GET  http://service-url/api/status/{fb_id}
+GET  http://service-url/api/history/{fb_id}
+GET  http://service-url/api/stats
+
+================================================================================
+TROUBLESHOOTING FLOW
+================================================================================
+
+1. Check Render Logs
+2. Look for error messages
+3. Match error with section in README.md
+4. Follow the solution
+5. Try again
+
+Can't find issue?
+→ Check RENDER_SETUP_BANGLA.md (Bengali version)
+→ Re-read README.md Troubleshooting section
+
+================================================================================
+SUCCESS CRITERIA
+================================================================================
+
+✓ Render service is "Live" (green status)
+✓ Logs show "✅ Flask server on 0.0.0.0:10000"
+✓ Telegram bot responds to /start
+✓ You can add a Facebook profile
+✓ Bot shows tracking status
+
+================================================================================
+
+When all above are done → YOU'RE READY! 🎉
+
+The bot will now run 24/7 on Render!
+
+================================================================================
