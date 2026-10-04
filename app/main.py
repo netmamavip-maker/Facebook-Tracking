@@ -1,3 +1,8 @@
+#!/usr/bin/env python3
+"""
+🔍 Facebook Activity Tracker v3.0 - Production Ready
+Real-time status tracking, last seen scraper, stable session management
+"""
 import os
 import json
 import logging
