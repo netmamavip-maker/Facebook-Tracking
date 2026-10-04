@@ -180,11 +180,11 @@ class FacebookSessionManager:
     def setup_session(self):
         """Setup session with retries and proper headers"""
         retry_strategy = Retry(
-            total=3,
-            status_forcelist=[429, 500, 502, 503, 504],
-            method_whitelist=["GET", "POST"],
-            backoff_factor=1
-        )
+    total=3,
+    status_forcelist=[429, 500, 502, 503, 504],
+    allowed_methods=["GET", "POST"],    ← এটা সঠিক
+    backoff_factor=1
+)
         adapter = HTTPAdapter(max_retries=retry_strategy)
         self.session.mount("https://", adapter)
         self.session.mount("http://", adapter)
