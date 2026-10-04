@@ -1,8 +1,4 @@
 #!/usr/bin/env python3
-"""
-🔍 Facebook Activity Tracker v3.0 - Production Ready
-Real-time status tracking, last seen scraper, stable session management
-"""
 
 import os
 import json
@@ -10,7 +6,6 @@ import logging
 import threading
 import time
 import sqlite3
-import hashlib
 from pathlib import Path
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
@@ -21,10 +16,6 @@ from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
 
 load_dotenv()
-
-# ============================================================================
-# CONFIGURATION
-# ============================================================================
 
 logging.basicConfig(
     level=logging.INFO,
@@ -38,15 +29,11 @@ FB_PASSWORD = os.getenv("FB_PASSWORD")
 PORT = int(os.getenv("PORT", 10000))
 
 if not all([TELEGRAM_BOT_TOKEN, FB_EMAIL, FB_PASSWORD]):
-    logger.warning("⚠️ Missing env vars - limited functionality")
+    logger.warning("WARNING: Missing env vars - limited functionality")
 
 DB_FILE = "facebook_tracker.db"
 COOKIES_FILE = "fb_cookies.json"
 app = Flask(__name__)
-
-# ============================================================================
-# DATABASE INITIALIZATION
-# ============================================================================
 
 class TrackerDB:
     @staticmethod
@@ -82,7 +69,7 @@ class TrackerDB:
         
         conn.commit()
         conn.close()
-        logger.info("✅ Database initialized")
+        logger.info("Database initialized")
     
     @staticmethod
     def add_target(fb_id, name, profile_url, user_id):
@@ -164,10 +151,6 @@ class TrackerDB:
 
 TrackerDB.init()
 
-# ============================================================================
-# FACEBOOK SESSION MANAGER (LIGHTWEIGHT)
-# ============================================================================
-
 class FacebookSessionManager:
     def __init__(self, email, password):
         self.email = email
@@ -178,13 +161,12 @@ class FacebookSessionManager:
         self.load_or_create_session()
     
     def setup_session(self):
-        """Setup session with retries and proper headers"""
         retry_strategy = Retry(
-    total=3,
-    status_forcelist=[429, 500, 502, 503, 504],
-    allowed_methods=["GET", "POST"],    ← এটা সঠিক
-    backoff_factor=1
-)
+            total=3,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET", "POST"],
+            backoff_factor=1
+        )
         adapter = HTTPAdapter(max_retries=retry_strategy)
         self.session.mount("https://", adapter)
         self.session.mount("http://", adapter)
@@ -200,35 +182,29 @@ class FacebookSessionManager:
         })
     
     def load_or_create_session(self):
-        """Load saved cookies or create new session"""
         cookies = TrackerDB.load_cookies()
         if cookies:
             self.session.cookies.update(cookies)
             if self.verify_session():
                 self.is_logged_in = True
-                logger.info("✅ Loaded existing Facebook session")
+                logger.info("Loaded existing Facebook session")
                 return
         
-        logger.info("🔑 Creating new Facebook session...")
+        logger.info("Creating new Facebook session...")
         self.login()
     
     def login(self):
-        """Login to Facebook using credentials"""
         try:
-            # Get login page
             resp = self.session.get('https://www.facebook.com/login.php', timeout=10)
             
-            # Extract form data
             soup = BeautifulSoup(resp.content, 'html.parser')
             
-            # Prepare login data
             login_data = {
                 'email': self.email,
                 'pass': self.password,
                 'login': 'Log In'
             }
             
-            # Send login request
             login_resp = self.session.post(
                 'https://www.facebook.com/login.php',
                 data=login_data,
@@ -236,27 +212,23 @@ class FacebookSessionManager:
                 allow_redirects=True
             )
             
-            # Check if logged in
             if 'c_user' in self.session.cookies:
                 self.is_logged_in = True
                 TrackerDB.save_cookies(dict(self.session.cookies))
-                logger.info("✅ Facebook login successful")
+                logger.info("Facebook login successful")
                 return True
             else:
-                logger.warning("⚠️ Login may have failed - checking profile access")
-                # Try to verify
                 if self.verify_session():
                     self.is_logged_in = True
                     TrackerDB.save_cookies(dict(self.session.cookies))
                     return True
         
         except Exception as e:
-            logger.error(f"❌ Login error: {e}")
+            logger.error(f"Login error: {e}")
         
         return False
     
     def verify_session(self):
-        """Verify session is valid"""
         try:
             resp = self.session.get('https://www.facebook.com/', timeout=10)
             return 'logout' in resp.text.lower() or 'profile' in resp.text.lower()
@@ -264,7 +236,6 @@ class FacebookSessionManager:
             return False
     
     def get_profile_info(self, profile_url):
-        """Scrape profile status and last seen"""
         try:
             resp = self.session.get(profile_url, timeout=15)
             soup = BeautifulSoup(resp.content, 'html.parser')
@@ -272,23 +243,18 @@ class FacebookSessionManager:
             status = "offline"
             last_seen = "unknown"
             
-            # Parse HTML for activity status
             page_text = resp.text
             
-            # Check for "Active now"
             if "Active now" in page_text or "active_now" in page_text:
                 status = "online"
                 last_seen = "now"
-            # Check for time patterns
             elif "Active" in page_text and "ago" in page_text:
-                # Extract time ago (e.g., "Active 5m ago")
                 import re
                 match = re.search(r'Active\s+(\d+\s*(?:m|h|d)\s*ago)', page_text)
                 if match:
                     last_seen = match.group(1)
                     status = "seen_recently"
             
-            # Get name from profile
             name = "Unknown"
             title_elem = soup.find('title')
             if title_elem:
@@ -302,20 +268,17 @@ class FacebookSessionManager:
             }
         
         except Exception as e:
-            logger.error(f"❌ Scrape error: {e}")
+            logger.error(f"Scrape error: {e}")
             return None
     
     def extract_fb_id(self, url):
-        """Extract FB ID or username from URL"""
         try:
             if 'facebook.com/' not in url:
                 return None
             
-            # Handle profile.php?id=123456
             if 'profile.php?id=' in url:
                 return url.split('id=')[1].split('&')[0]
             
-            # Handle /username/
             parts = url.split('facebook.com/')
             if len(parts) > 1:
                 username = parts[1].split('/')[0].split('?')[0]
@@ -329,33 +292,25 @@ class FacebookSessionManager:
 
 fb_manager = FacebookSessionManager(FB_EMAIL, FB_PASSWORD)
 
-# ============================================================================
-# ACTIVITY TRACKER ENGINE
-# ============================================================================
-
 class ActivityTracker:
     def __init__(self):
         self.tracking = {}
         self.lock = threading.Lock()
-        self.check_interval = 300  # 5 minutes default
+        self.check_interval = 300
     
     def add_target(self, user_id, profile_url):
-        """Add profile to tracking"""
         fb_id = fb_manager.extract_fb_id(profile_url)
         
         if not fb_id:
-            return False, "❌ Invalid Facebook URL"
+            return False, "Invalid Facebook URL"
         
-        # Get initial info
         info = fb_manager.get_profile_info(profile_url)
         if not info:
-            return False, "❌ Cannot access profile"
+            return False, "Cannot access profile"
         
-        # Save to DB
         if not TrackerDB.add_target(fb_id, info['name'], profile_url, user_id):
-            return False, "⚠️ Already tracking this profile"
+            return False, "Already tracking this profile"
         
-        # Start tracking
         with self.lock:
             self.tracking[fb_id] = {
                 'user_id': user_id,
@@ -367,14 +322,12 @@ class ActivityTracker:
                 'check_count': 0
             }
         
-        # Start background monitor
         threading.Thread(target=self._monitor_loop, args=(fb_id,), daemon=True).start()
         
-        logger.info(f"🔍 Tracking started: {info['name']} ({fb_id})")
-        return True, f"✅ Tracking *{info['name']}*\nChecks every 5 minutes"
+        logger.info(f"Tracking started: {info['name']} ({fb_id})")
+        return True, f"Tracking {info['name']}\nChecks every 5 minutes"
     
     def _monitor_loop(self, fb_id):
-        """Background monitoring loop"""
         while True:
             try:
                 with self.lock:
@@ -382,18 +335,15 @@ class ActivityTracker:
                         break
                     track = self.tracking[fb_id]
                 
-                # Check if should run
                 if not track.get('active'):
                     time.sleep(60)
                     continue
                 
-                # Get latest info
                 info = fb_manager.get_profile_info(track['url'])
                 if info:
                     old_status = track['last_status']
                     old_last_seen = track['last_seen']
                     
-                    # Log to DB
                     TrackerDB.log_activity(
                         fb_id,
                         info['status'],
@@ -401,7 +351,6 @@ class ActivityTracker:
                         "online" if info['status'] == "online" else "offline"
                     )
                     
-                    # Update tracking
                     with self.lock:
                         if fb_id in self.tracking:
                             self.tracking[fb_id]['last_status'] = info['status']
@@ -409,9 +358,8 @@ class ActivityTracker:
                             self.tracking[fb_id]['last_check'] = datetime.now()
                             self.tracking[fb_id]['check_count'] += 1
                     
-                    # Log changes
                     if info['status'] != old_status:
-                        logger.info(f"⚠️ {fb_id} status: {old_status} → {info['status']}")
+                        logger.info(f"Status change {fb_id}: {old_status} to {info['status']}")
                 
                 time.sleep(self.check_interval)
             
@@ -420,18 +368,16 @@ class ActivityTracker:
                 time.sleep(120)
     
     def stop_tracking(self, fb_id, user_id):
-        """Stop tracking"""
         with self.lock:
             if fb_id in self.tracking and self.tracking[fb_id]['user_id'] == user_id:
                 self.tracking[fb_id]['active'] = False
                 del self.tracking[fb_id]
                 TrackerDB.remove_target(fb_id, user_id)
-                logger.info(f"🛑 Stopped: {fb_id}")
+                logger.info(f"Stopped: {fb_id}")
                 return True
         return False
     
     def get_status(self, fb_id):
-        """Get current status"""
         with self.lock:
             if fb_id in self.tracking:
                 track = self.tracking[fb_id]
@@ -444,7 +390,6 @@ class ActivityTracker:
                     'checks': track['check_count']
                 }
         
-        # Try DB
         latest = TrackerDB.get_latest_activity(fb_id)
         if latest:
             return {
@@ -457,7 +402,6 @@ class ActivityTracker:
         return {'active': False, 'status': 'unknown'}
     
     def get_history(self, fb_id, limit=20):
-        """Get activity history"""
         rows = TrackerDB.get_activity(fb_id, limit)
         return [{
             'status': r[0],
@@ -467,10 +411,6 @@ class ActivityTracker:
         } for r in rows]
 
 tracker = ActivityTracker()
-
-# ============================================================================
-# FLASK API ENDPOINTS
-# ============================================================================
 
 @app.route('/', methods=['GET'])
 def health():
@@ -507,10 +447,6 @@ def get_stats():
         'timestamp': datetime.now().isoformat(),
         'active_tracking': len(tracker.tracking)
     }), 200
-
-# ============================================================================
-# TELEGRAM BOT INTEGRATION
-# ============================================================================
 
 class TelegramBot:
     def __init__(self, token):
@@ -551,14 +487,14 @@ class TelegramBot:
                 f"{self.base_url}/sendMessage",
                 json={
                     "chat_id": chat_id,
-                    "text": "🔍 *Facebook Activity Tracker v3.0*\n\nReal-time profile monitoring",
+                    "text": "Facebook Activity Tracker v3.0\n\nReal-time profile monitoring",
                     "parse_mode": "Markdown",
                     "reply_markup": {
                         "inline_keyboard": [
-                            [{"text": "➕ Add Profile", "callback_data": "add_profile"},
-                             {"text": "📊 My Profiles", "callback_data": "list_profiles"}],
-                            [{"text": "🔴 Online Status", "callback_data": "online_status"},
-                             {"text": "📋 History", "callback_data": "history"}]
+                            [{"text": "Add Profile", "callback_data": "add_profile"},
+                             {"text": "My Profiles", "callback_data": "list_profiles"}],
+                            [{"text": "Online Status", "callback_data": "online_status"},
+                             {"text": "History", "callback_data": "history"}]
                         ]
                     }
                 },
@@ -585,23 +521,23 @@ class TelegramBot:
         
         elif text == '/help':
             self.send_message(chat_id,
-                "*Commands:*\n"
-                "`/start` - Menu\n"
-                "`/add URL` - Add profile\n"
-                "`/list` - My profiles\n"
-                "`/status ID` - Check status\n"
-                "`/stop ID` - Stop tracking\n"
-                "`/history ID` - View history"
+                "Commands:\n"
+                "/start - Menu\n"
+                "/add URL - Add profile\n"
+                "/list - My profiles\n"
+                "/status ID - Check status\n"
+                "/stop ID - Stop tracking\n"
+                "/history ID - View history"
             )
         
         elif text == '/list':
             targets = TrackerDB.get_targets(user_id)
             if targets:
-                msg = "*Your Profiles:*\n\n"
+                msg = "Your Profiles:\n\n"
                 for t in targets:
-                    msg += f"👤 *{t[1]}*\n`{t[0]}`\n"
+                    msg += f"- {t[1]}\n({t[0]})\n"
             else:
-                msg = "❌ No profiles tracked"
+                msg = "No profiles tracked"
             self.send_message(chat_id, msg)
         
         elif text.startswith('/add '):
@@ -613,30 +549,27 @@ class TelegramBot:
             fb_id = text[8:].strip()
             status = tracker.get_status(fb_id)
             if status.get('active'):
-                msg = (f"🔴 *{fb_id}*\n"
-                       f"Status: `{status['status']}`\n"
-                       f"Last Seen: `{status['last_seen']}`\n"
-                       f"Last Check: `{status['last_check']}`")
+                msg = f"Status: {status['status']}\nLast Seen: {status['last_seen']}"
             else:
-                msg = "❌ Not actively tracking"
+                msg = "Not actively tracking"
             self.send_message(chat_id, msg)
         
         elif text.startswith('/stop '):
             fb_id = text[6:].strip()
             if tracker.stop_tracking(fb_id, user_id):
-                self.send_message(chat_id, f"🛑 Stopped tracking `{fb_id}`")
+                self.send_message(chat_id, f"Stopped tracking {fb_id}")
             else:
-                self.send_message(chat_id, "❌ Profile not found")
+                self.send_message(chat_id, "Profile not found")
         
         elif text.startswith('/history '):
             fb_id = text[9:].strip()
             history = tracker.get_history(fb_id, 10)
             if history:
-                msg = f"📋 *History - {fb_id}*\n\n"
+                msg = f"History - {fb_id}\n\n"
                 for h in history[:10]:
-                    msg += f"`{h['timestamp'][:10]}` - `{h['status']}` ({h['last_seen']})\n"
+                    msg += f"{h['timestamp'][:10]} - {h['status']}\n"
             else:
-                msg = "❌ No history"
+                msg = "No history"
             self.send_message(chat_id, msg)
         
         elif 'facebook.com' in text:
@@ -649,39 +582,38 @@ class TelegramBot:
         user_id = callback['from']['id']
         
         if data == "add_profile":
-            self.send_message(chat_id, "📎 Send Facebook profile URL:\n`https://facebook.com/username`")
+            self.send_message(chat_id, "Send Facebook profile URL:\nhttps://facebook.com/username")
         
         elif data == "list_profiles":
             targets = TrackerDB.get_targets(user_id)
             if targets:
-                msg = "*Your Profiles:*\n\n"
+                msg = "Your Profiles:\n\n"
                 for t in targets:
                     status = tracker.get_status(t[0])
-                    status_icon = "🟢" if status.get('active') else "⚪"
-                    msg += f"{status_icon} *{t[1]}* - `{status.get('status', 'unknown')}`\n"
+                    msg += f"- {t[1]} ({status.get('status', 'unknown')})\n"
             else:
-                msg = "❌ No profiles tracked"
+                msg = "No profiles tracked"
             self.send_message(chat_id, msg)
         
         elif data == "online_status":
             targets = TrackerDB.get_targets(user_id)
             if targets:
-                msg = "*Online Status:*\n\n"
+                msg = "Online Status:\n\n"
                 for t in targets:
                     status = tracker.get_status(t[0])
                     if status.get('status') == 'online':
-                        msg += f"🟢 {t[1]} - *ONLINE*\n"
+                        msg += f"- {t[1]} ONLINE\n"
                     else:
-                        msg += f"⚪ {t[1]} - `{status.get('last_seen', 'unknown')}`\n"
+                        msg += f"- {t[1]} {status.get('last_seen', 'unknown')}\n"
             else:
-                msg = "❌ No profiles tracked"
+                msg = "No profiles tracked"
             self.send_message(chat_id, msg)
         
         elif data == "history":
-            self.send_message(chat_id, "📋 Use command: `/history fb_id`")
+            self.send_message(chat_id, "Use: /history fb_id")
     
     def run(self):
-        logger.info("🚀 Telegram bot polling started")
+        logger.info("Telegram bot polling started")
         while True:
             try:
                 updates = self.get_updates()
@@ -698,26 +630,22 @@ def start_bot_thread():
         thread = threading.Thread(target=bot.run, daemon=True)
         thread.start()
     else:
-        logger.warning("⚠️ No Telegram token - bot disabled")
-
-# ============================================================================
-# MAIN
-# ============================================================================
+        logger.warning("No Telegram token - bot disabled")
 
 if __name__ == "__main__":
     logger.info("="*80)
-    logger.info("🔍 Facebook Activity Tracker v3.0 - STARTING")
+    logger.info("Facebook Activity Tracker v3.0 - STARTING")
     logger.info("="*80)
     
     if fb_manager.is_logged_in:
-        logger.info("✅ Facebook session authenticated")
+        logger.info("Facebook session authenticated")
     else:
-        logger.warning("⚠️ Facebook login failed - limited functionality")
+        logger.warning("Facebook login failed - limited functionality")
     
     start_bot_thread()
     
-    logger.info(f"🚀 Flask server on 0.0.0.0:{PORT}")
-    logger.info("📡 APIs ready: /api/targets, /api/status, /api/history")
+    logger.info(f"Flask server on 0.0.0.0:{PORT}")
+    logger.info("APIs ready: /api/targets, /api/status, /api/history")
     logger.info("="*80)
     
     app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False, threaded=True)
