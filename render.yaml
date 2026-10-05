@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: facebook-tracker-bot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: cd app && python main.py
+    envVars:
+      - key: FB_EMAIL
+        value: nusratparisa2@gmail.com
+      - key: FB_PASSWORD
+        value: Parisa310724
