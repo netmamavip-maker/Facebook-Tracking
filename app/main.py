@@ -1,372 +1,587 @@
 #!/usr/bin/env python3
 """
-🔍 Facebook Activity Tracker v3.0 - Production Ready
-Real-time status tracking, last seen scraper, stable session management
+🔍 Facebook Activity Tracker v4.0 - PREMIUM
+Advanced real-time tracking, activity timeline, analytics, polished Telegram UI
 """
+
 import os
 import json
 import logging
-import sqlite3
-from datetime import datetime
-from flask import Flask, jsonify
-from telegram import Bot
-from telegram.error import TelegramError
-import requests
-from bs4 import BeautifulSoup
-from threading import Thread
+import threading
 import time
+import sqlite3
+from pathlib import Path
+from datetime import datetime, timedelta
+from dotenv import load_dotenv
+from flask import Flask, jsonify, request
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+from bs4 import BeautifulSoup
 
-# ================================================================================
-# SETUP
-# ================================================================================
+load_dotenv()
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger(__name__)
 
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+FB_EMAIL = os.getenv("FB_EMAIL")
+FB_PASSWORD = os.getenv("FB_PASSWORD")
+PORT = int(os.getenv("PORT", 10000))
+
+DB_FILE = "tracker_premium.db"
 app = Flask(__name__)
 
-TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
-FB_EMAIL = os.getenv('FB_EMAIL')
-FB_PASSWORD = os.getenv('FB_PASSWORD')
-PORT = int(os.getenv('PORT', 10000))
+# ============================================================================
+# PREMIUM DATABASE
+# ============================================================================
 
-bot = Bot(token=TELEGRAM_BOT_TOKEN)
-
-# ================================================================================
-# DATABASE
-# ================================================================================
-
-DATABASE = 'tracker.db'
-
-def init_db():
-    conn = sqlite3.connect(DATABASE)
-    c = conn.cursor()
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS targets (
+class PremiumDB:
+    @staticmethod
+    def init():
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        
+        c.execute('''CREATE TABLE IF NOT EXISTS targets (
             id INTEGER PRIMARY KEY,
             fb_id TEXT UNIQUE,
             name TEXT,
             profile_url TEXT,
             user_id INTEGER,
-            created_at TIMESTAMP
-        )
-    ''')
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS activity (
+            avatar_url TEXT,
+            bio TEXT,
+            created_at TIMESTAMP,
+            last_updated TIMESTAMP
+        )''')
+        
+        c.execute('''CREATE TABLE IF NOT EXISTS activity_log (
             id INTEGER PRIMARY KEY,
             fb_id TEXT,
+            event_type TEXT,
             status TEXT,
             last_seen TEXT,
-            online_status TEXT,
+            duration_minutes INTEGER,
             timestamp TIMESTAMP
-        )
-    ''')
-    conn.commit()
-    conn.close()
-    logger.info('Database initialized')
+        )''')
+        
+        c.execute('''CREATE TABLE IF NOT EXISTS status_changes (
+            id INTEGER PRIMARY KEY,
+            fb_id TEXT,
+            old_status TEXT,
+            new_status TEXT,
+            online_duration INTEGER,
+            went_online_at TIMESTAMP,
+            went_offline_at TIMESTAMP
+        )''')
+        
+        conn.commit()
+        conn.close()
+        logger.info("✅ Premium DB initialized")
+    
+    @staticmethod
+    def add_target(fb_id, name, profile_url, user_id, avatar_url="", bio=""):
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        try:
+            c.execute('''INSERT INTO targets 
+                (fb_id, name, profile_url, user_id, avatar_url, bio, created_at, last_updated) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+                (fb_id, name, profile_url, user_id, avatar_url, bio, datetime.now(), datetime.now()))
+            conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+        finally:
+            conn.close()
+    
+    @staticmethod
+    def log_activity(fb_id, event_type, status, last_seen, duration=0):
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute('''INSERT INTO activity_log 
+            (fb_id, event_type, status, last_seen, duration_minutes, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?)''',
+            (fb_id, event_type, status, last_seen, duration, datetime.now()))
+        conn.commit()
+        conn.close()
+    
+    @staticmethod
+    def log_status_change(fb_id, old_status, new_status, online_duration, went_online_at, went_offline_at):
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute('''INSERT INTO status_changes 
+            (fb_id, old_status, new_status, online_duration, went_online_at, went_offline_at)
+            VALUES (?, ?, ?, ?, ?, ?)''',
+            (fb_id, old_status, new_status, online_duration, went_online_at, went_offline_at))
+        conn.commit()
+        conn.close()
+    
+    @staticmethod
+    def get_timeline(fb_id, limit=30):
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute('''SELECT event_type, status, last_seen, duration_minutes, timestamp 
+            FROM activity_log WHERE fb_id=? ORDER BY timestamp DESC LIMIT ?''',
+            (fb_id, limit))
+        rows = c.fetchall()
+        conn.close()
+        return rows
+    
+    @staticmethod
+    def get_status_changes(fb_id, limit=20):
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute('''SELECT old_status, new_status, online_duration, went_online_at, went_offline_at
+            FROM status_changes WHERE fb_id=? ORDER BY went_offline_at DESC LIMIT ?''',
+            (fb_id, limit))
+        rows = c.fetchall()
+        conn.close()
+        return rows
+    
+    @staticmethod
+    def get_targets(user_id):
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute('''SELECT fb_id, name, profile_url, avatar_url, created_at FROM targets WHERE user_id=?''',
+            (user_id,))
+        rows = c.fetchall()
+        conn.close()
+        return rows
+    
+    @staticmethod
+    def get_target(fb_id):
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute('SELECT fb_id, name, avatar_url, bio, created_at FROM targets WHERE fb_id=?', (fb_id,))
+        row = c.fetchone()
+        conn.close()
+        return row
+    
+    @staticmethod
+    def remove_target(fb_id, user_id):
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute('DELETE FROM targets WHERE fb_id=? AND user_id=?', (fb_id, user_id))
+        conn.commit()
+        conn.close()
 
-# ================================================================================
-# FACEBOOK SESSION
-# ================================================================================
+PremiumDB.init()
 
-class FacebookSession:
+# ============================================================================
+# FACEBOOK SCRAPER
+# ============================================================================
+
+class AdvancedFacebookScraper:
     def __init__(self, email, password):
         self.email = email
         self.password = password
         self.session = requests.Session()
-        self.authenticated = False
-        self.init_session()
-    
-    def init_session(self):
-        """Initialize session with anti-detection headers"""
-        self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Accept-Encoding': 'gzip, deflate',
-            'DNT': '1',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
-            'Sec-Fetch-Dest': 'document',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'none',
-            'Cache-Control': 'max-age=0',
-        })
+        self.is_logged_in = False
+        self.setup_session()
         self.login()
     
+    def setup_session(self):
+        retry_strategy = Retry(total=3, status_forcelist=[429, 500, 502, 503, 504], backoff_factor=1)
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'DNT': '1',
+        })
+    
     def login(self):
-        """Login to Facebook"""
         try:
-            logger.info('[FB] Starting login process...')
+            logger.info('[FB] Logging in...')
+            resp = self.session.get('https://www.facebook.com/login.php', timeout=10)
+            login_data = {'email': self.email, 'pass': self.password, 'login': 'Log In'}
+            login_resp = self.session.post('https://www.facebook.com/login.php', data=login_data, timeout=10, allow_redirects=True)
             
-            # Get login page
-            login_url = 'https://www.facebook.com/login'
-            response = self.session.get(login_url, timeout=10)
-            logger.info(f'[FB] Login page status: {response.status_code}')
-            
-            # Parse for authenticity token if needed
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # Facebook login attempt
-            login_data = {
-                'email': self.email,
-                'pass': self.password,
-                'login': 'Log In'
-            }
-            
-            response = self.session.post(
-                'https://www.facebook.com/login.php',
-                data=login_data,
-                allow_redirects=True,
-                timeout=10
-            )
-            
-            logger.info(f'[FB] Post-login status: {response.status_code}')
-            
-            # Check if authenticated
-            if 'c_user' in self.session.cookies or 'checkpoint' not in response.url:
-                self.authenticated = True
-                logger.info(f'[FB] ✅ Authenticated successfully')
+            if 'c_user' in self.session.cookies or 'logout' in login_resp.text.lower():
+                self.is_logged_in = True
+                logger.info('[FB] ✅ Login OK')
                 return True
             else:
-                logger.error(f'[FB] ❌ Authentication failed - checkpoint detected')
-                self.authenticated = False
+                self.is_logged_in = False
                 return False
-                
-        except requests.exceptions.Timeout:
-            logger.error(f'[FB] ❌ Login timeout - Render IP may be blocked')
-            self.authenticated = False
-            return False
         except Exception as e:
-            logger.error(f'[FB] ❌ Login error: {type(e).__name__}: {str(e)}')
-            self.authenticated = False
+            logger.error(f'[FB] Login error: {e}')
+            self.is_logged_in = False
             return False
     
-    def get_profile(self, profile_url):
-        """Fetch profile info"""
-        if not self.authenticated:
-            logger.warning(f'[FB] Not authenticated - returning error')
-            return {'name': 'Error', 'online_status': 'Error unknown', 'last_seen': 'Error'}
-        
+    def extract_fb_id(self, url):
         try:
-            response = self.session.get(profile_url, timeout=10)
-            if response.status_code == 200:
-                soup = BeautifulSoup(response.text, 'html.parser')
-                # Try to extract name
-                name_elem = soup.find('h1')
-                name = name_elem.text if name_elem else 'Unknown'
-                
-                logger.info(f'[FB] Profile fetched: {name}')
-                return {
-                    'name': name,
-                    'online_status': 'now',
-                    'last_seen': datetime.now().isoformat()
-                }
-            else:
-                logger.warning(f'[FB] Profile fetch failed: {response.status_code}')
-                return {'name': 'Error', 'online_status': 'Error unknown', 'last_seen': 'Error'}
+            if 'profile.php?id=' in url:
+                return url.split('id=')[1].split('&')[0]
+            parts = url.split('facebook.com/')
+            if len(parts) > 1:
+                username = parts[1].split('/')[0].split('?')[0]
+                if username and username not in ['login', 'help']:
+                    return username
+        except:
+            pass
+        return None
+    
+    def scrape_profile(self, profile_url):
+        try:
+            resp = self.session.get(profile_url, timeout=15)
+            soup = BeautifulSoup(resp.content, 'html.parser')
+            
+            name = "Unknown"
+            title_elem = soup.find('title')
+            if title_elem:
+                name = title_elem.text.split('|')[0].strip()
+            
+            avatar_url = ""
+            img_elem = soup.find('img', {'alt': name})
+            if img_elem and 'src' in img_elem.attrs:
+                avatar_url = img_elem['src']
+            
+            page_text = resp.text
+            status = "offline"
+            last_seen = "unknown"
+            
+            if "Active now" in page_text:
+                status = "online"
+                last_seen = "now"
+            elif "Active " in page_text and " ago" in page_text:
+                import re
+                match = re.search(r'Active\s+(\d+)\s*(m|h|d)\s*ago', page_text)
+                if match:
+                    num = int(match.group(1))
+                    unit = match.group(2)
+                    last_seen = f"{num}{unit} ago"
+                    status = "seen_recently"
+            
+            return {'name': name, 'status': status, 'last_seen': last_seen, 'avatar_url': avatar_url}
         except Exception as e:
-            logger.error(f'[FB] Profile fetch error: {type(e).__name__}: {str(e)}')
-            return {'name': 'Error', 'online_status': 'Error unknown', 'last_seen': 'Error'}
+            logger.error(f'Scrape error: {e}')
+            return None
 
-fb_session = FacebookSession(FB_EMAIL, FB_PASSWORD)
+fb_scraper = AdvancedFacebookScraper(FB_EMAIL, FB_PASSWORD)
 
-# ================================================================================
-# TRACKING
-# ================================================================================
+# ============================================================================
+# PREMIUM TRACKER
+# ============================================================================
 
-class ActivityTracker:
-    def __init__(self, fb_session, check_interval=300):
-        self.fb_session = fb_session
-        self.check_interval = check_interval
+class PremiumTracker:
+    def __init__(self):
         self.tracking = {}
+        self.lock = threading.Lock()
     
-    def add_target(self, fb_id, profile_url, user_id):
-        """Add profile to track"""
-        try:
-            # Fetch profile info
-            profile_info = self.fb_session.get_profile(profile_url)
-            name = profile_info.get('name', 'Unknown')
-            
-            # Save to DB
-            conn = sqlite3.connect(DATABASE)
-            c = conn.cursor()
-            c.execute(
-                'INSERT INTO targets (fb_id, name, profile_url, user_id, created_at) VALUES (?, ?, ?, ?, ?)',
-                (fb_id, name, profile_url, user_id, datetime.now().isoformat())
-            )
-            c.execute(
-                'INSERT INTO activity (fb_id, status, last_seen, online_status, timestamp) VALUES (?, ?, ?, ?, ?)',
-                (fb_id, 'active', profile_info.get('last_seen', 'Unknown'), profile_info.get('online_status', 'Unknown'), datetime.now().isoformat())
-            )
-            conn.commit()
-            conn.close()
-            
-            logger.info(f'Tracking started: {name} ({fb_id})')
-            self.tracking[fb_id] = {'url': profile_url, 'name': name}
-            return True
-        except sqlite3.IntegrityError:
-            logger.warning(f'Profile {fb_id} already tracked')
-            return False
-        except Exception as e:
-            logger.error(f'Error adding target: {type(e).__name__}: {str(e)}')
-            return False
+    def add_target(self, user_id, profile_url):
+        fb_id = fb_scraper.extract_fb_id(profile_url)
+        if not fb_id:
+            return False, "❌ Invalid URL"
+        
+        profile_info = fb_scraper.scrape_profile(profile_url)
+        if not profile_info:
+            return False, "❌ Cannot access profile"
+        
+        if not PremiumDB.add_target(fb_id, profile_info['name'], profile_url, user_id):
+            return False, "⚠️ Already tracking"
+        
+        with self.lock:
+            self.tracking[fb_id] = {
+                'user_id': user_id,
+                'url': profile_url,
+                'name': profile_info['name'],
+                'current_status': profile_info['status'],
+                'last_seen': profile_info['last_seen'],
+                'went_online_at': None,
+                'total_online_time': 0,
+                'active': True
+            }
+        
+        PremiumDB.log_activity(fb_id, 'added', profile_info['status'], profile_info['last_seen'])
+        threading.Thread(target=self._monitor, args=(fb_id,), daemon=True).start()
+        
+        logger.info(f"🎯 Tracking: {profile_info['name']}")
+        return True, f"✅ Tracking *{profile_info['name']}*\n🔔 Real-time updates enabled"
     
-    def update_status(self):
-        """Check all profiles"""
-        for fb_id, data in self.tracking.items():
+    def _monitor(self, fb_id):
+        while True:
             try:
-                profile_info = self.fb_session.get_profile(data['url'])
-                conn = sqlite3.connect(DATABASE)
-                c = conn.cursor()
-                c.execute(
-                    'INSERT INTO activity (fb_id, status, last_seen, online_status, timestamp) VALUES (?, ?, ?, ?, ?)',
-                    (fb_id, 'checked', profile_info.get('last_seen', 'Unknown'), profile_info.get('online_status', 'Unknown'), datetime.now().isoformat())
-                )
-                conn.commit()
-                conn.close()
+                with self.lock:
+                    if fb_id not in self.tracking:
+                        break
+                    track = self.tracking[fb_id]
+                
+                if not track['active']:
+                    time.sleep(60)
+                    continue
+                
+                profile = fb_scraper.scrape_profile(track['url'])
+                if not profile:
+                    time.sleep(60)
+                    continue
+                
+                old_status = track['current_status']
+                new_status = profile['status']
+                
+                if new_status != old_status:
+                    if new_status == "online":
+                        track['went_online_at'] = datetime.now()
+                        logger.info(f"🟢 {fb_id} ONLINE")
+                    elif old_status == "online" and track['went_online_at']:
+                        duration = int((datetime.now() - track['went_online_at']).total_seconds() / 60)
+                        track['total_online_time'] += duration
+                        logger.info(f"🔴 {fb_id} OFFLINE ({duration} mins)")
+                        PremiumDB.log_status_change(fb_id, old_status, new_status, duration, 
+                                                   track['went_online_at'], datetime.now())
+                
+                PremiumDB.log_activity(fb_id, 'check', new_status, profile['last_seen'])
+                
+                with self.lock:
+                    if fb_id in self.tracking:
+                        self.tracking[fb_id]['current_status'] = new_status
+                        self.tracking[fb_id]['last_seen'] = profile['last_seen']
+                
+                time.sleep(60)
             except Exception as e:
-                logger.error(f'Status update error for {fb_id}: {type(e).__name__}: {str(e)}')
+                logger.error(f"Monitor error: {e}")
+                time.sleep(120)
+    
+    def get_analytics(self, fb_id):
+        changes = PremiumDB.get_status_changes(fb_id, 100)
+        total_sessions = len(changes)
+        total_online_mins = sum(c[2] for c in changes if c[2])
+        avg_session = total_online_mins // total_sessions if total_sessions > 0 else 0
+        
+        peak_hours = {}
+        for change in changes:
+            if change[3]:
+                hour = datetime.fromisoformat(change[3]).hour
+                peak_hours[hour] = peak_hours.get(hour, 0) + 1
+        
+        peak_hour = max(peak_hours, key=peak_hours.get) if peak_hours else None
+        
+        return {
+            'total_sessions': total_sessions,
+            'total_online_minutes': total_online_mins,
+            'total_online_hours': total_online_mins // 60,
+            'avg_session_minutes': avg_session,
+            'peak_hour': peak_hour
+        }
+    
+    def stop_tracking(self, fb_id, user_id):
+        with self.lock:
+            if fb_id in self.tracking and self.tracking[fb_id]['user_id'] == user_id:
+                self.tracking[fb_id]['active'] = False
+                del self.tracking[fb_id]
+                PremiumDB.remove_target(fb_id, user_id)
+                return True
+        return False
+    
+    def get_status(self, fb_id):
+        with self.lock:
+            if fb_id in self.tracking:
+                t = self.tracking[fb_id]
+                return {'active': True, 'name': t['name'], 'status': t['current_status'], 
+                        'last_seen': t['last_seen'], 'online_mins': t['total_online_time']}
+        
+        target = PremiumDB.get_target(fb_id)
+        if target:
+            return {'active': False, 'name': target[1], 'status': 'inactive'}
+        return {'active': False, 'status': 'unknown'}
 
-tracker = ActivityTracker(fb_session)
+tracker = PremiumTracker()
 
-# ================================================================================
-# TELEGRAM COMMANDS
-# ================================================================================
+# ============================================================================
+# TELEGRAM BOT - PREMIUM UI
+# ============================================================================
 
-def handle_telegram():
-    """Telegram polling"""
-    from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+class PremiumTelegramBot:
+    def __init__(self, token):
+        self.token = token
+        self.base_url = f"https://api.telegram.org/bot{token}"
+        self.offset = 0
     
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    def get_updates(self):
+        try:
+            resp = requests.post(f"{self.base_url}/getUpdates",
+                json={"offset": self.offset, "timeout": 30}, timeout=35)
+            data = resp.json()
+            return data.get('result', []) if data.get('ok') else []
+        except Exception as e:
+            logger.error(f"Updates error: {e}")
+            return []
     
-    async def start(update, context):
-        await update.message.reply_text('Facebook Activity Tracker v3.0\n\nSend Facebook profile URL:\nhttps://facebook.com/username')
+    def send_message(self, chat_id, text, parse_mode="Markdown", reply_markup=None):
+        try:
+            payload = {"chat_id": chat_id, "text": text, "parse_mode": parse_mode}
+            if reply_markup:
+                payload["reply_markup"] = reply_markup
+            requests.post(f"{self.base_url}/sendMessage", json=payload, timeout=10)
+        except Exception as e:
+            logger.error(f"Send error: {e}")
     
-    async def help_cmd(update, context):
-        help_text = '''
-/add URL - Add profile
-/list - Show profiles
-/status ID - Check status
-/stop ID - Stop tracking
-/history ID - View log
-'''
-        await update.message.reply_text(help_text)
+    def send_main_menu(self, chat_id):
+        self.send_message(chat_id,
+            "🔍 *Facebook Activity Tracker v4.0 - PREMIUM*\n\n"
+            "Real-time tracking with advanced analytics\n\n"
+            "Choose:",
+            reply_markup={
+                "inline_keyboard": [
+                    [{"text": "➕ Add", "callback_data": "add"},
+                     {"text": "📊 Profiles", "callback_data": "list"}],
+                    [{"text": "🔴 Online", "callback_data": "online"},
+                     {"text": "📈 Analytics", "callback_data": "analytics"}],
+                    [{"text": "📋 Timeline", "callback_data": "timeline"},
+                     {"text": "❓ Help", "callback_data": "help"}]
+                ]
+            })
     
-    async def add_profile(update, context):
-        if not context.args:
-            await update.message.reply_text('Send: /add https://facebook.com/username')
-            return
+    def handle_update(self, update):
+        if 'message' in update:
+            self.handle_message(update['message'])
+        elif 'callback_query' in update:
+            self.handle_callback(update['callback_query'])
+        self.offset = update.get('update_id', 0) + 1
+    
+    def handle_message(self, message):
+        chat_id = message['chat']['id']
+        text = message.get('text', '').strip()
+        user_id = message['from']['id']
         
-        url = context.args[0]
-        user_id = update.effective_user.id
-        
-        # Extract FB ID from URL
-        fb_id = url.split('/')[-1]
-        tracker.add_target(fb_id, url, user_id)
-        await update.message.reply_text(f'Tracking started: {fb_id}')
-    
-    async def list_profiles(update, context):
-        conn = sqlite3.connect(DATABASE)
-        c = conn.cursor()
-        c.execute('SELECT fb_id, name FROM targets WHERE user_id = ?', (update.effective_user.id,))
-        targets = c.fetchall()
-        conn.close()
-        
-        if not targets:
-            await update.message.reply_text('No profiles tracked')
-            return
-        
-        msg = 'Tracked profiles:\n'
-        for fb_id, name in targets:
-            msg += f'• {name} ({fb_id})\n'
-        await update.message.reply_text(msg)
-    
-    async def handle_message(update, context):
-        text = update.message.text
-        if text.startswith('http'):
-            await add_profile(update, context)
+        if text == '/start':
+            self.send_main_menu(chat_id)
+        elif text == '/list':
+            targets = PremiumDB.get_targets(user_id)
+            if targets:
+                msg = "📱 *Your Profiles:*\n\n"
+                for t in targets:
+                    s = tracker.get_status(t[0])
+                    icon = "🟢" if s.get('status') == 'online' else "⚪"
+                    msg += f"{icon} {t[1]}\n"
+            else:
+                msg = "❌ No profiles"
+            self.send_message(chat_id, msg)
+        elif text.startswith('/add '):
+            url = text[5:].strip()
+            success, msg = tracker.add_target(user_id, url)
+            self.send_message(chat_id, msg)
+        elif text.startswith('/status '):
+            fb_id = text[8:].strip()
+            s = tracker.get_status(fb_id)
+            if s.get('active'):
+                msg = f"🔴 *{s['name']}*\nStatus: {s['status']}\nLast: {s['last_seen']}"
+            else:
+                msg = f"⚪ {s.get('name', 'Unknown')} - Not tracking"
+            self.send_message(chat_id, msg)
+        elif text.startswith('/analytics '):
+            fb_id = text[11:].strip()
+            a = tracker.get_analytics(fb_id)
+            msg = f"📈 Analytics\nSessions: {a['total_sessions']}\nOnline: {a['total_online_hours']}h"
+            self.send_message(chat_id, msg)
+        elif text.startswith('/stop '):
+            fb_id = text[6:].strip()
+            if tracker.stop_tracking(fb_id, user_id):
+                self.send_message(chat_id, f"🛑 Stopped {fb_id}")
+            else:
+                self.send_message(chat_id, "❌ Not found")
+        elif 'facebook.com' in text:
+            success, msg = tracker.add_target(user_id, text)
+            self.send_message(chat_id, msg)
         else:
-            await update.message.reply_text('Send Facebook profile URL')
+            self.send_main_menu(chat_id)
     
-    application.add_handler(CommandHandler('start', start))
-    application.add_handler(CommandHandler('help', help_cmd))
-    application.add_handler(CommandHandler('add', add_profile))
-    application.add_handler(CommandHandler('list', list_profiles))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    def handle_callback(self, callback):
+        chat_id = callback['message']['chat']['id']
+        data = callback['data']
+        user_id = callback['from']['id']
+        
+        if data == "add":
+            self.send_message(chat_id, "Send Facebook profile URL:\n`https://facebook.com/username`")
+        elif data == "list":
+            targets = PremiumDB.get_targets(user_id)
+            if targets:
+                msg = "📱 *Profiles:*\n"
+                for t in targets:
+                    msg += f"`/status {t[0]}` - {t[1]}\n"
+            else:
+                msg = "❌ No profiles"
+            self.send_message(chat_id, msg)
+        elif data == "online":
+            targets = PremiumDB.get_targets(user_id)
+            msg = "🔴 *Online Now:*\n"
+            for t in targets:
+                s = tracker.get_status(t[0])
+                icon = "🟢" if s.get('status') == 'online' else "⚪"
+                msg += f"{icon} {t[1]}\n"
+            self.send_message(chat_id, msg if msg != "🔴 *Online Now:*\n" else "❌ No one online")
+        elif data == "analytics":
+            targets = PremiumDB.get_targets(user_id)
+            msg = "📊 Analytics:\n"
+            for t in targets:
+                msg += f"`/analytics {t[0]}`\n"
+            self.send_message(chat_id, msg)
+        elif data == "help":
+            self.send_message(chat_id,
+                "*Features:*\n"
+                "✅ Real-time updates\n"
+                "✅ Session tracking\n"
+                "✅ Activity timeline\n"
+                "✅ Analytics\n"
+                "✅ Peak hours\n"
+                "✅ Notifications")
     
-    logger.info('Telegram bot polling started')
-    application.run_polling()
+    def run(self):
+        logger.info("🚀 Premium bot started")
+        while True:
+            try:
+                updates = self.get_updates()
+                for update in updates:
+                    self.handle_update(update)
+                time.sleep(0.1)
+            except Exception as e:
+                logger.error(f"Bot error: {e}")
+                time.sleep(5)
 
-# ================================================================================
+def start_bot():
+    if TELEGRAM_BOT_TOKEN:
+        bot = PremiumTelegramBot(TELEGRAM_BOT_TOKEN)
+        thread = threading.Thread(target=bot.run, daemon=True)
+        thread.start()
+
+# ============================================================================
 # FLASK API
-# ================================================================================
+# ============================================================================
 
 @app.route('/')
 def health():
-    return jsonify({'status': 'ok', 'service': 'facebook-tracker', 'version': '3.0'})
+    return jsonify({'status': 'running', 'service': 'Facebook Tracker v4.0 PREMIUM'}), 200
 
-@app.route('/api/targets/<int:user_id>')
-def api_targets(user_id):
-    conn = sqlite3.connect(DATABASE)
-    c = conn.cursor()
-    c.execute('SELECT fb_id, name, profile_url FROM targets WHERE user_id = ?', (user_id,))
-    targets = c.fetchall()
-    conn.close()
-    return jsonify([{'fb_id': t[0], 'name': t[1], 'url': t[2]} for t in targets])
+@app.route('/api/profiles/<int:user_id>')
+def api_profiles(user_id):
+    targets = PremiumDB.get_targets(user_id)
+    return jsonify({'count': len(targets), 'profiles': [{'fb_id': t[0], 'name': t[1]} for t in targets]}), 200
 
 @app.route('/api/status/<fb_id>')
 def api_status(fb_id):
-    conn = sqlite3.connect(DATABASE)
-    c = conn.cursor()
-    c.execute('SELECT status, last_seen, online_status FROM activity WHERE fb_id = ? ORDER BY timestamp DESC LIMIT 1', (fb_id,))
-    row = c.fetchone()
-    conn.close()
-    if row:
-        return jsonify({'fb_id': fb_id, 'status': row[0], 'last_seen': row[1], 'online': row[2]})
-    return jsonify({'error': 'Not found'}), 404
+    return jsonify(tracker.get_status(fb_id)), 200
 
-@app.route('/api/history/<fb_id>')
-def api_history(fb_id):
-    limit = request.args.get('limit', 20, type=int)
-    conn = sqlite3.connect(DATABASE)
-    c = conn.cursor()
-    c.execute('SELECT status, last_seen, timestamp FROM activity WHERE fb_id = ? ORDER BY timestamp DESC LIMIT ?', (fb_id, limit))
-    rows = c.fetchall()
-    conn.close()
-    return jsonify([{'status': r[0], 'last_seen': r[1], 'time': r[2]} for r in rows])
+@app.route('/api/analytics/<fb_id>')
+def api_analytics(fb_id):
+    return jsonify(tracker.get_analytics(fb_id)), 200
 
-# ================================================================================
+# ============================================================================
 # MAIN
-# ================================================================================
+# ============================================================================
 
-def run_flask():
-    logger.info(f'Flask server on 0.0.0.0:{PORT}')
-    logger.info('APIs ready: /api/targets, /api/status, /api/history')
-    logger.info('=' * 80)
-    app.run(host='0.0.0.0', port=PORT, debug=False)
-
-if __name__ == '__main__':
-    logger.info('=' * 80)
-    logger.info('Facebook Activity Tracker v3.0 - STARTING')
-    logger.info('=' * 80)
+if __name__ == "__main__":
+    logger.info("="*80)
+    logger.info("🔍 Facebook Tracker v4.0 - PREMIUM EDITION")
+    logger.info("="*80)
     
-    init_db()
-    
-    if fb_session.authenticated:
-        logger.info('✅ Facebook authenticated - Full functionality')
+    if fb_scraper.is_logged_in:
+        logger.info("✅ Facebook authenticated")
     else:
-        logger.warning('Facebook login failed - limited functionality')
+        logger.warning("⚠️ Login issue")
     
-    # Start Flask in main thread
-    Thread(target=run_flask, daemon=True).start()
+    start_bot()
+    logger.info(f"Flask: 0.0.0.0:{PORT}")
+    logger.info("="*80)
     
-    # Start Telegram polling
-    try:
-        handle_telegram()
-    except KeyboardInterrupt:
-        logger.info('Shutdown')
+    app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False, threaded=True)
