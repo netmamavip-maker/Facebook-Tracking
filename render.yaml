@@ -7,12 +7,7 @@ services:
     startCommand: cd app && python main.py
     envVars:
       - key: FB_EMAIL
-        value: nusratparisa2@gmail.com
       - key: FB_PASSWORD
-        value: Parisa310724
       - key: TELEGRAM_BOT_TOKEN
-        value: 8596228048:AAH7Mzw_MHvVyx7eenD1x0i_u5C9_Ldodds
       - key: PORT
         value: 10000
-    buildpacks:
-      - url: https://github.com/heroku/heroku-buildpack-google-chrome
